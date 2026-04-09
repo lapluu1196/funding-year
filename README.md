@@ -5,7 +5,9 @@ Script: [`fill_funding_year.py`](/home/marcus/getFundingYear/fill_funding_year.p
 ## Mục tiêu
 
 Điền cột `Funding_year` trong file Excel dựa trên dữ liệu từ URL project.
-Đồng thời điền thêm `Open_date` và `Close_date` theo project period.
+Đồng thời điền thêm thông tin theo source:
+- `Open_date`, `Close_date` theo project period
+- với `european_union`: thêm `sweden`, `full_funding`
 
 Hiện tại hỗ trợ:
 - `arvsfonden`
@@ -36,6 +38,9 @@ Với mỗi dòng có `Financier = European Union`:
    - `Funding_year` = năm của `ecSignatureDate`
    - `Open_date` = `startDateCode`
    - `Close_date` = `endDateCode`
+   - `full_funding` = `ecContribution`
+4. Parse JSON `payload.organizations`:
+   - `sweden` = `true` nếu có ít nhất 1 tổ chức có `country.name = Sweden`, ngược lại `false`
 
 ### Nguyên tắc quan trọng
 
@@ -57,8 +62,10 @@ Sheet đầu tiên của workbook cần có các cột:
 
 Bạn có thể đổi tên cột qua CLI option (`--url-column`, `--financier-column`, `--funding-year-column`).
 
-`Open_date` và `Close_date` được ghi vào 2 cột ngay sau cột `Funding_year`.
-- Nếu 2 header này đang trống, script tự đặt tên mặc định: `Open_date`, `Close_date`.
+Các cột output được ghi ngay sau cột `Funding_year`:
+- Luôn có: `Open_date`, `Close_date`
+- Với source `european_union`: thêm `sweden`, `full_funding`
+- Nếu header tương ứng đang trống, script tự đặt tên mặc định theo các tên ở trên.
 
 ## Cài đặt
 

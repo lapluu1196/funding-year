@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 TAG = f"{{{NS_MAIN}}}"
@@ -28,6 +28,8 @@ class ExtractedProjectData:
     funding_year: Optional[int] = None
     open_date: Optional[str] = None
     close_date: Optional[str] = None
+    sweden: Optional[bool] = None
+    full_funding: Optional[Union[int, float]] = None
 
 
 @dataclass(frozen=True)
@@ -204,12 +206,17 @@ def clear_cell_content(target: ET.Element) -> None:
         target.remove(child)
 
 
-def set_numeric_cell(row: ET.Element, col_idx: int, row_idx: int, number: int) -> None:
+def set_numeric_cell(
+    row: ET.Element, col_idx: int, row_idx: int, number: Union[int, float]
+) -> None:
     target = find_or_create_cell(row=row, col_idx=col_idx, row_idx=row_idx)
     target.attrib.pop("t", None)
     clear_cell_content(target)
     value_node = ET.SubElement(target, f"{TAG}v")
-    value_node.text = str(number)
+    if isinstance(number, float) and number.is_integer():
+        value_node.text = str(int(number))
+    else:
+        value_node.text = str(number)
 
 
 def set_text_cell(row: ET.Element, col_idx: int, row_idx: int, text: str) -> None:
@@ -427,6 +434,54 @@ def normalize_optional_text(value: object) -> Optional[str]:
     return normalized or None
 
 
+def normalize_optional_number(value: object) -> Optional[Union[int, float]]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else value
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        try:
+            parsed = float(normalized)
+        except ValueError:
+            return None
+        return int(parsed) if parsed.is_integer() else parsed
+    return None
+
+
+def iter_organization_entries(raw_organizations: object) -> Iterable[Dict[str, object]]:
+    if not isinstance(raw_organizations, dict):
+        return
+    for org_group in raw_organizations.values():
+        if isinstance(org_group, dict):
+            yield org_group
+            continue
+        if isinstance(org_group, list):
+            for entry in org_group:
+                if isinstance(entry, dict):
+                    yield entry
+
+
+def has_organization_from_country(
+    raw_organizations: object, target_country_name: str
+) -> Optional[bool]:
+    if not isinstance(raw_organizations, dict):
+        return None
+    target = target_country_name.casefold()
+    for organization in iter_organization_entries(raw_organizations):
+        country = organization.get("country")
+        if not isinstance(country, dict):
+            continue
+        country_name = normalize_optional_text(country.get("name"))
+        if country_name and country_name.casefold() == target:
+            return True
+    return False
+
+
 def extract_eu_project_identifier(url: str) -> Optional[str]:
     parsed = urllib.parse.urlparse(url)
     query = urllib.parse.parse_qs(parsed.query)
@@ -513,11 +568,15 @@ def extract_european_union_project_data(payload_text: str) -> ExtractedProjectDa
     )
     open_date = normalize_optional_text(information.get("startDateCode"))
     close_date = normalize_optional_text(information.get("endDateCode"))
+    sweden = has_organization_from_country(details.get("organizations"), "Sweden")
+    full_funding = normalize_optional_number(information.get("ecContribution"))
 
     return ExtractedProjectData(
         funding_year=funding_year,
         open_date=open_date,
         close_date=close_date,
+        sweden=sweden,
+        full_funding=full_funding,
     )
 
 
@@ -898,6 +957,11 @@ def main() -> int:
     funding_col = header_map[args.funding_year_column.lower()]
     open_col = funding_col + 1
     close_col = funding_col + 2
+    sweden_col: Optional[int] = None
+    full_funding_col: Optional[int] = None
+    if source.name == "european_union":
+        sweden_col = funding_col + 3
+        full_funding_col = funding_col + 4
 
     header_row = rows[0]
     header_row_idx_text = header_row.get("r") or "1"
@@ -909,6 +973,15 @@ def main() -> int:
         set_text_cell(header_row, open_col, header_row_idx, "Open_date")
     if close_header_value == "":
         set_text_cell(header_row, close_col, header_row_idx, "Close_date")
+    if sweden_col is not None and full_funding_col is not None:
+        sweden_header_value = header_values.get(sweden_col, ("", None))[0].strip()
+        full_funding_header_value = header_values.get(
+            full_funding_col, ("", None)
+        )[0].strip()
+        if sweden_header_value == "":
+            set_text_cell(header_row, sweden_col, header_row_idx, "sweden")
+        if full_funding_header_value == "":
+            set_text_cell(header_row, full_funding_col, header_row_idx, "full_funding")
 
     data_rows = rows[1:]
     total_data_rows = len(data_rows)
@@ -996,15 +1069,32 @@ def main() -> int:
                 )
                 row_updated = True
 
+            if sweden_col is not None and result.sweden is not None:
+                set_text_cell(
+                    pending.row,
+                    sweden_col,
+                    pending.row_idx,
+                    "true" if result.sweden else "false",
+                )
+                row_updated = True
+
+            if full_funding_col is not None and result.full_funding is not None:
+                set_numeric_cell(
+                    pending.row, full_funding_col, pending.row_idx, result.full_funding
+                )
+                row_updated = True
+
             if row_updated:
                 stats.updated += 1
                 if args.verbose:
                     logger.info(
-                        "Row %d: funding_year=%s, open_date=%s, close_date=%s",
+                        "Row %d: funding_year=%s, open_date=%s, close_date=%s, sweden=%s, full_funding=%s",
                         pending.row_idx,
                         result.funding_year,
                         result.open_date,
                         result.close_date,
+                        result.sweden,
+                        result.full_funding,
                     )
             elif args.verbose:
                 logger.info(
